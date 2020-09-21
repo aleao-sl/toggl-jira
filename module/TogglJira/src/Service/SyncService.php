@@ -23,6 +23,8 @@ class SyncService implements LoggerAwareInterface
 
     private const REQUIRED_TIME_SPENT = 28800;
 
+    private const FILE_CACHE_LOGS = 'data/cache/logs.json';
+
     /**
      * @var Api
      */
@@ -58,6 +60,11 @@ class SyncService implements LoggerAwareInterface
      */
     private $notifyUsers;
 
+    /**
+     * @var array
+     */
+    private $cacheData;
+
     public function __construct(
         Api $api,
         GuzzleClient $togglClient,
@@ -79,7 +86,7 @@ class SyncService implements LoggerAwareInterface
     /**
      * @throws Exception
      */
-    public function sync(DateTimeInterface $startDate, DateTimeInterface $endDate, bool $overwrite): void
+    public function sync(DateTimeInterface $startDate, DateTimeInterface $endDate, bool $overwrite, bool $dryRun): void
     {
         // Make sure we always start and end at 0:00. We only sync per day.
         $startDate = new DateTime($startDate->format('Y-m-d'));
@@ -111,7 +118,7 @@ class SyncService implements LoggerAwareInterface
                 continue;
             }
 
-            $workLogs = $this->parseTimeEntries($timeEntries);
+            $workLogs = $this->parseTimeEntries(array_reverse($timeEntries));
 
             // Don't fill the current day, since the day might not be over yet
             // Otherwise, use the filler issue to add the remaining time in order to have the full day filled
@@ -120,13 +127,22 @@ class SyncService implements LoggerAwareInterface
                 $clonedStartDate->format('d-m-Y') !== (new DateTime())->format('d-m-Y') &&
                 $clonedStartDate->format('N') <= 5
             ) {
+                if(!$dryRun) {
                 $workLogs = $this->fillTimeToFull($workLogs, $clonedStartDate);
+                }
             }
 
-            $this->addWorkLogsToApi($workLogs, $user['key'], $overwrite, $this->notifyUsers);
+            if(!$dryRun) {
+                $this->addWorkLogsToApi($workLogs, $user['key'], $overwrite, $this->notifyUsers);
+            }
         }
 
-        $this->logger->info('All done for today, time to go home!');
+        if(!$dryRun) {
+            $this->logger->info('All done for today, time to go home!');
+        }
+        else{
+            $this->logger->info('DryRun option executed!');
+        }
     }
 
     private function getTimeEntries(DateTimeInterface $startDate, DateTimeInterface $endDate): ?array
@@ -149,6 +165,28 @@ class SyncService implements LoggerAwareInterface
         }
     }
 
+    private function getProjects(array $timeEntry): ?array
+    {
+        try {
+
+            $cacheKey = 'wid' . $timeEntry['wid'];
+            if(!isset($this->cacheData[$cacheKey])){
+                $this->cacheData[$cacheKey] = $this->togglClient->GetProjects(
+                    ['id' => $timeEntry['wid']])->toArray();
+            }
+            /** @var array $timeEntries */
+            return $this->cacheData[$cacheKey];
+
+        } catch (Exception $e) {
+            $this->logger->error(
+                'Failed to get projects from Toggl',
+                ['exception' => $e]
+            );
+
+            return null;
+        }
+    }
+
     /**
      * @throws Exception
      */
@@ -157,13 +195,15 @@ class SyncService implements LoggerAwareInterface
         $workLogEntries = [];
 
         foreach ($timeEntries as $timeEntry) {
-            $workLogEntry = $this->parseTimeEntry($timeEntry);
+
+            $projects = $this->getProjects($timeEntry);
+            $workLogEntry = $this->parseTimeEntry($timeEntry, $projects);
 
             if (!$workLogEntry) {
                 continue;
             }
 
-            $existingKey = md5($workLogEntry->getIssueID() . '-' . $workLogEntry->getSpentOn()->format('Y-m-d'));
+            $existingKey = md5((string)$timeEntry['id']);
 
             if (isset($workLogEntries[$existingKey])) {
                 $this->addTimeToExistingTimeEntry($workLogEntries[$existingKey], $workLogEntry);
@@ -173,9 +213,11 @@ class SyncService implements LoggerAwareInterface
             $workLogEntries[$existingKey] = $workLogEntry;
 
             $this->logger->info('Found time entry for issue', [
+                'uploaded' => $this->checkLogId($workLogEntry->getId()) ? "Yes" : "No",
                 'issueID' => $workLogEntry->getIssueID(),
                 'spentOn' => $workLogEntry->getSpentOn()->format('Y-m-d'),
                 'timeSpent' => round($workLogEntry->getTimeSpent() / 60 / 60, 2) . ' hours',
+                'logId' => $workLogEntry->getId()
             ]);
         }
 
@@ -185,14 +227,33 @@ class SyncService implements LoggerAwareInterface
     /**
      * @throws Exception
      */
-    private function parseTimeEntry(array $timeEntry): ?WorkLogEntry
+    private function parseTimeEntry(array $timeEntry, array $projects): ?WorkLogEntry
     {
+
+        if (!isset($timeEntry['description'])) {
+            $this->logger->error('Missing description information.', [$timeEntry['start']]);
+            return null;
+        }
+
         $data = [
-            'issueID' => str_replace(':', '', explode(' ', $timeEntry['description'])[0]),
             'timeSpent' => $timeEntry['duration'],
             'comment' => $timeEntry['description'],
-            'spentOn' => $timeEntry['start']
+            'spentOn' => $timeEntry['start'],
+            'id'      => $timeEntry['id']
         ];
+
+        foreach ($projects as $project)
+        {
+            if (!isset($timeEntry['pid'])) {
+                $this->logger->error('Missing timeEntry ID.', [$timeEntry['description'], $timeEntry['start']]);
+                return null;
+            }
+
+            if ($project['id'] == $timeEntry['pid']){
+                $data['issueID'] = $project['name'];
+                break;
+            }
+        }
 
         if (strpos($data['issueID'], '-') === false) {
             $this->logger->warning('Could not parse issue string, cannot link to Jira');
@@ -238,27 +299,35 @@ class SyncService implements LoggerAwareInterface
         /** @var WorkLogEntry $workLogEntry */
         foreach ($workLogEntries as $workLogEntry) {
             try {
-                $result = $this->api->addWorkLogEntry(
-                    $workLogEntry->getIssueID(),
-                    $workLogEntry->getTimeSpent(),
-                    $userKey,
-                    $workLogEntry->getComment(),
-                    $workLogEntry->getSpentOn()->format('Y-m-d\TH:i:s.vO'),
-                    $overwrite,
-                    $notifyUsers
-                );
+                if (!$this->checkLogId($workLogEntry->getId())) {
 
-                if (isset($result->getResult()['errorMessages']) && \count($result->getResult()['errorMessages']) > 0) {
-                    $this->logger->error(implode("\n", $result->getResult()['errorMessages']), [
-                        'issueID' => $workLogEntry->getIssueID()
-                    ]);
+                    $result = $this->api->addWorkLogEntry(
+                        $workLogEntry->getIssueID(),
+                        $workLogEntry->getTimeSpent(),
+                        $userKey,
+                        $workLogEntry->getComment(),
+                        $workLogEntry->getSpentOn()->format('Y-m-d\TH:i:s.vO'),
+                        $overwrite,
+                        $notifyUsers
+                    );
+
+                    if (isset($result->getResult()['errorMessages']) && \count($result->getResult()['errorMessages']) > 0) {
+                        $this->logger->error(implode("\n", $result->getResult()['errorMessages']), [
+                            'issueID'   => $workLogEntry->getIssueID(),
+                            'logId'     => $workLogEntry->getId(),
+                        ]);
+                    } else {
+
+                        $this->saveLogId($workLogEntry->getId());
+                        $this->logger->info('Saved work logs entry', [
+                            'issueID'   => $workLogEntry->getIssueID(),
+                            'spentOn'   => $workLogEntry->getSpentOn()->format('Y-m-d'),
+                            'timeSpent' => round($workLogEntry->getTimeSpent() / 60 / 60, 2) . ' hours',
+                            'logId'     => $workLogEntry->getId(),
+                        ]);
+
+                    }
                 }
-
-                $this->logger->info('Saved worklog entry', [
-                    'issueID' => $workLogEntry->getIssueID(),
-                    'spentOn' => $workLogEntry->getSpentOn()->format('Y-m-d'),
-                    'timeSpent' => round($workLogEntry->getTimeSpent() / 60 / 60, 2) . ' hours',
-                ]);
             } catch (Exception $e) {
                 $this->logger->error('Could not add worklog entry', ['exception' => $e]);
             }
@@ -298,5 +367,43 @@ class SyncService implements LoggerAwareInterface
 
 
         return $workLogEntries;
+    }
+
+    private function saveLogId($id)
+    {
+
+        $fileContent = [];
+
+        if (!file_exists(self::FILE_CACHE_LOGS)) {
+            touch(self::FILE_CACHE_LOGS);
+        }
+
+        $fileContentJson = file_get_contents(self::FILE_CACHE_LOGS);
+        if ($fileContentJson) {
+            $fileContent = json_decode($fileContentJson, true);
+        }
+
+        $fileContent[$id] = true;
+        $fileContentJson = json_encode($fileContent);
+        file_put_contents(self::FILE_CACHE_LOGS, $fileContentJson);
+
+    }
+
+    private function checkLogId($id)
+    {
+
+        if (!file_exists(self::FILE_CACHE_LOGS)) {
+            touch(self::FILE_CACHE_LOGS);
+        }
+
+        $fileContent = [];
+        $fileContentJson = file_get_contents(self::FILE_CACHE_LOGS);
+
+        if($fileContentJson){
+            $fileContent = json_decode($fileContentJson,true);
+        }
+
+        return isset($fileContent[$id]);
+
     }
 }

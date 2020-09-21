@@ -48,13 +48,14 @@ class SyncCommand implements CommandInterface, LoggerAwareInterface
         $startDate = $reqStartDate ? new \DateTime($reqStartDate) : $this->syncOptions->getLastSync();
         $endDate = $reqEndDate ? new \DateTime($reqEndDate) : new \DateTime('now');
         $overwrite = (bool) $request->getParam('overwrite', false);
+        $dryRun = (bool) $request->getParam('dryRun', false);
 
         $this->logger->info(
             'Syncing time entries',
             ['lastSync' => $startDate->format(DATE_ATOM)]
         );
 
-        $this->service->sync($startDate, $endDate, $overwrite);
+        $this->service->sync($startDate, $endDate, $overwrite,$dryRun);
         $this->syncOptions->setLastSync($endDate);
 
         $this->writer->toFile('config.json', $this->syncOptions->toArray());

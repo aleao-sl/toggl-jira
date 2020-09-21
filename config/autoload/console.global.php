@@ -8,7 +8,7 @@ return [
         'routes' => [
             [
                 'name' => 'sync',
-                'route' => '[--startDate=] [--endDate=] [--overwrite=]',
+                'route' => '[--startDate=] [--endDate=] [--overwrite=] [--dryRun=]',
                 'description' => 'Sync Toggl entries to Jira',
                 'short_description' => 'Sync',
                 'defaults' => [],

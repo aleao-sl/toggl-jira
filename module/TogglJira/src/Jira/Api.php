@@ -50,11 +50,12 @@ class Api extends BaseApi
 
                 if (!$overwrite) {
                     return $this->api(
-                        self::REQUEST_PUT,
-                        "/rest/api/2/issue/{$issueID}/worklog/{$workLog['id']}?adjustEstimate=auto&notifyUsers={$notify}",
+                        self::REQUEST_POST,
+                        "/rest/api/2/issue/{$issueID}/worklog?adjustEstimate=auto&notifyUsers={$notify}",
                         $params
                     );
                 }
+
 
                 if ($overwrite) {
                     /**
@@ -64,7 +65,6 @@ class Api extends BaseApi
                 }
             }
         }
-
         return $this->api(self::REQUEST_POST, "/rest/api/2/issue/{$issueID}/worklog?adjustEstimate=auto&notifyUsers={$notify}", $params);
     }
 }

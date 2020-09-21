@@ -21,7 +21,7 @@ php bin/toggljira.php help
 
 or to start syncing:
 ```php
-php bin/toggljira.php sync [--startDate=] [--endDate=] [--overwrite=] 
+php bin/toggljira.php sync [--startDate=] [--endDate=] [--overwrite=] [--dry-run=] 
 ```
 
 * By default the startDate is the last sync date from `config.json` or today.

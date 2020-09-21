@@ -41,6 +41,10 @@ class WorkLogHydrator implements HydratorInterface
             $object->setSpentOn(new \DateTimeImmutable($data['spentOn']));
         }
 
+        if (isset($data['id'])) {
+            $object->setId((int)$data['id']) ;
+        }
+
         return $object;
     }
 }

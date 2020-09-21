@@ -63,6 +63,7 @@ class SyncCommandTest extends TestCase
         $requestMock->shouldReceive('getParam')->with('startDate', null)->andReturnNull();
         $requestMock->shouldReceive('getParam')->with('endDate', null)->andReturn('tomorrow');
         $requestMock->shouldReceive('getParam')->with('overwrite', false)->andReturnTrue();
+        $requestMock->shouldReceive('getParam')->with('dryRun', false)->andReturnTrue();
 
         $consoleMock = \Mockery::mock(AdapterInterface::class);
 
