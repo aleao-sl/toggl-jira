@@ -242,21 +242,30 @@ class SyncService implements LoggerAwareInterface
             'id'      => $timeEntry['id']
         ];
 
-        foreach ($projects as $project)
-        {
-            if (!isset($timeEntry['pid'])) {
-                $this->logger->error('Missing timeEntry ID.', [$timeEntry['description'], $timeEntry['start']]);
-                return null;
-            }
+        $IssueIdMatches = [];
+        preg_match('/^(\s|\t)?+[^-\s]{2,6}-[0-9]{1,6}/i', $timeEntry['description'], $IssueIdMatches);
 
-            if ($project['id'] == $timeEntry['pid']){
-                $data['issueID'] = $project['name'];
-                break;
+        if(count($IssueIdMatches)){
+            $data['issueID'] = trim(array_pop($IssueIdMatches));
+            $timeEntry['description'] = trim(preg_replace("/{$data['issueID']}/","",$timeEntry['description'])," -:\t");
+        } else if (isset($timeEntry['pid']) && !isset($timeEntry['tags'])) {
+            foreach ($projects as $project) {
+                if ($project['id'] == $timeEntry['pid']) {
+                    $data['issueID'] = trim($project['name']);
+                    break;
+                }
             }
+        }else if(isset($timeEntry['tags']) && count($timeEntry['tags']) > 0){
+            $data['issueID'] = trim(array_shift($timeEntry['tags']));
+        }
+
+        if (!isset($data['issueID']) || empty(trim($data['issueID']))) {
+            $this->logger->error('Missing timeEntry ID.', [$timeEntry['start'], $timeEntry['description']]);
+            return null;
         }
 
         if (strpos($data['issueID'], '-') === false) {
-            $this->logger->warning('Could not parse issue string, cannot link to Jira');
+            $this->logger->error('Could not parse issue string, cannot link to Jira', [$timeEntry['start'], $data['issueID'], $timeEntry['description']]);
             return null;
         }
 
@@ -264,6 +273,11 @@ class SyncService implements LoggerAwareInterface
             $this->logger->info('0 seconds, or timer still running, skipping', [
                 'issueID' => $data['issueID']
             ]);
+            return null;
+        }
+
+        if (empty($data['comment'])) {
+            $this->logger->info('Missing comment information.', [$timeEntry['start'], $timeEntry['timeSpent']]);
             return null;
         }
 
